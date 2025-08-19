@@ -363,7 +363,7 @@ archive_write_set_format_7zip(struct archive *_a)
 		    "Can't allocate 7-Zip data");
 		return (ARCHIVE_FATAL);
 	}
-	zip->temp_fd = -1;
+	zip->temp_fd = a->temp_fd;
 	__archive_rb_tree_init(&(zip->rbtree), &rb_ops);
 	file_init_register(zip);
 	file_init_register_empty(zip);
