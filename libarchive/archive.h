@@ -785,6 +785,7 @@ __LA_DECL int		 archive_read_finish(struct archive *) __LA_DEPRECATED;
  *   6) archive_write_free to cleanup the writer and release resources
  */
 __LA_DECL struct archive	*archive_write_new(void);
+__LA_DECL struct archive	*archive_write_new_with_fd(int fd);
 __LA_DECL int archive_write_set_bytes_per_block(struct archive *,
 		     int bytes_per_block);
 __LA_DECL int archive_write_get_bytes_per_block(struct archive *);
