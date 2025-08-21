@@ -1005,12 +1005,29 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
 			    "Can't allocate memory for Pathname");
 			return (ARCHIVE_FATAL);
 		}
-		archive_set_error(&a->archive,
-		    ARCHIVE_ERRNO_FILE_FORMAT,
-		    "Pathname cannot be converted "
-		    "from %s to current locale",
-		    archive_string_conversion_charset_name(sconv));
-		ret = ARCHIVE_WARN;
+		/* Instead of failing, try to use the raw bytes as filename */
+		/* Create a null-terminated copy of the raw filename */
+		char *raw_filename = malloc(filename_length + 1);
+		if (raw_filename != NULL) {
+			memcpy(raw_filename, h, filename_length);
+			raw_filename[filename_length] = '\0';
+			archive_entry_set_pathname(entry, raw_filename);
+			free(raw_filename);
+			/* Log a warning but continue processing */
+			archive_set_error(&a->archive,
+			    ARCHIVE_ERRNO_FILE_FORMAT,
+			    "Pathname encoding conversion failed, using raw bytes: "
+			    "from %s to current locale. Raw filename used instead.",
+			    archive_string_conversion_charset_name(sconv));
+			ret = ARCHIVE_WARN;
+		} else {
+			archive_set_error(&a->archive,
+			    ARCHIVE_ERRNO_FILE_FORMAT,
+			    "Pathname cannot be converted "
+			    "from %s to current locale.",
+			    archive_string_conversion_charset_name(sconv));
+			ret = ARCHIVE_WARN;
+		}
 	}
 	__archive_read_consume(a, filename_length);
 
