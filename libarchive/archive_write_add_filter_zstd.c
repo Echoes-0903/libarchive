@@ -385,6 +385,10 @@ archive_compressor_zstd_open(struct archive_write_filter *f)
 
 	if (data->out.dst == NULL) {
 		size_t bs = ZSTD_CStreamOutSize(), bpb;
+		
+		/* Use a larger buffer for better performance with large data */
+		bs = bs * 32; /* Increase buffer size to about 4MB */
+		
 		if (f->archive->magic == ARCHIVE_WRITE_MAGIC) {
 			/* Buffer size should be a multiple number of
 			 * the of bytes per block for performance. */
