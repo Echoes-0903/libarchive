@@ -113,6 +113,9 @@ SET(libarchive_SOURCES
   archive_read_support_format_warc.c
   archive_read_support_format_xar.c
   archive_read_support_format_zip.c
+  gbk_converter.c
+  gbk_converter.h
+  tab_gbk2uni.h
   archive_string.c
   archive_string.h
   archive_string_composition.h
