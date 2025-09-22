@@ -26,6 +26,7 @@
  */
 
 #include "archive_platform.h"
+#include "gbk_converter.h"
 
 /*
  * The definitive documentation of the Zip file format is:
@@ -992,6 +993,55 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
 	else
 		sconv = zip->sconv_default;
 
+	/* Handle UTF-8 filenames directly */
+	if (zip_entry->zip_flags & ZIP_UTF8_NAME) {
+		/* This is UTF-8 data, set it directly without locale conversion */
+		char utf8_filename[1024];
+		if (filename_length < sizeof(utf8_filename)) {
+			memcpy(utf8_filename, h, filename_length);
+			utf8_filename[filename_length] = '\0';
+			archive_entry_copy_pathname(entry, utf8_filename);
+			/* Verify the pathname was set successfully */
+			if (archive_entry_pathname(entry) != NULL) {
+				goto filename_done;
+			}
+		}
+		/* If UTF-8 direct setting failed, fall through to other methods */
+	}
+
+	/* Try GBK conversion for non-UTF8 filenames */
+	if (!(zip_entry->zip_flags & ZIP_UTF8_NAME) && is_gbk_encoding(h, filename_length)) {
+		/* This looks like GBK encoding, try to convert it */
+		char converted_name[1024];
+		size_t converted_len = simple_gbk_to_utf8(h, filename_length, 
+		                                         converted_name, sizeof(converted_name));
+		
+		if (converted_len != (size_t)-1) {
+			/* GBK conversion successful, set as UTF-8 */
+			archive_entry_copy_pathname(entry, converted_name);
+			/* Verify the pathname was set successfully */
+			if (archive_entry_pathname(entry) != NULL) {
+				goto filename_done;
+			}
+		}
+	}
+	
+	/* Final fallback: try direct copy for any remaining cases */
+	if (archive_entry_pathname(entry) == NULL) {
+		/* Create null-terminated filename for direct setting */
+		char fallback_filename[1024];
+		if (filename_length < sizeof(fallback_filename)) {
+			memcpy(fallback_filename, h, filename_length);
+			fallback_filename[filename_length] = '\0';
+			archive_entry_copy_pathname(entry, fallback_filename);
+			/* If direct copy worked, we're done */
+			if (archive_entry_pathname(entry) != NULL) {
+				goto filename_done;
+			}
+		}
+	}
+	
+	/* Fall back to standard conversion for other encodings */
 	if (archive_entry_copy_pathname_l(entry,
 	    h, filename_length, sconv) != 0) {
 		if (errno == ENOMEM) {
@@ -1006,6 +1056,8 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
 		    archive_string_conversion_charset_name(sconv));
 		ret = ARCHIVE_WARN;
 	}
+	
+filename_done:
 	__archive_read_consume(a, filename_length);
 
 	/* Read the extra data. */
