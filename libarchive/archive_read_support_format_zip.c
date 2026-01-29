@@ -27,6 +27,7 @@
 
 #include "archive_platform.h"
 #include "gbk_converter.h"
+#include "tab_gbk2uni.h"
 
 /*
  * The definitive documentation of the Zip file format is:
@@ -776,6 +777,15 @@ process_extra(struct archive_read *a, struct archive_entry *entry,
 			/* Info-ZIP Unicode Path Extra Field. */
 			if (datasize < 5 || entry == NULL)
 				break;
+			
+			/* CRITICAL FIX: If pathname is already set from local header with UTF8 flag,
+			 * don't overwrite it with the 0x7075 extra field processing.
+			 * The local header pathname is more reliable for UTF-8 filenames. */
+			const char *existing_pathname = archive_entry_pathname(entry);
+			if (existing_pathname != NULL && (zip_entry->zip_flags & ZIP_UTF8_NAME)) {
+				break;
+			}
+			
 			offset += 5;
 			datasize -= 5;
 
@@ -1001,40 +1011,60 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
 			memcpy(utf8_filename, h, filename_length);
 			utf8_filename[filename_length] = '\0';
 			archive_entry_copy_pathname(entry, utf8_filename);
-			/* Verify the pathname was set successfully */
 			if (archive_entry_pathname(entry) != NULL) {
 				goto filename_done;
 			}
 		}
-		/* If UTF-8 direct setting failed, fall through to other methods */
 	}
 
-	/* Try GBK conversion for non-UTF8 filenames */
-	if (!(zip_entry->zip_flags & ZIP_UTF8_NAME) && is_gbk_encoding(h, filename_length)) {
-		/* This looks like GBK encoding, try to convert it */
+	/* Aggressive GBK fallback: Try GBK conversion unconditionally if pathname not set
+	 * This handles Chinese filenames in Windows-created ZIPs which may have:
+	 * - No UTF-8 flag but GBK encoding
+	 * - Incorrect UTF-8 flag but actually GBK data
+	 * - Any encoding detection failure
+	 * 
+	 * We try GBK conversion first before other methods since it's common in
+	 * Chinese Windows environments and is_gbk_encoding() might be too conservative.
+	 */
+	if (archive_entry_pathname(entry) == NULL && filename_length > 0) {
 		char converted_name[1024];
+		
+		/* Always attempt GBK conversion - let the converter validate */
 		size_t converted_len = simple_gbk_to_utf8(h, filename_length, 
 		                                         converted_name, sizeof(converted_name));
 		
 		if (converted_len != (size_t)-1) {
-			/* GBK conversion successful, set as UTF-8 */
 			archive_entry_copy_pathname(entry, converted_name);
-			/* Verify the pathname was set successfully */
 			if (archive_entry_pathname(entry) != NULL) {
 				goto filename_done;
 			}
 		}
 	}
 	
-	/* Final fallback: try direct copy for any remaining cases */
+	/* Final fallback: try direct copy AND aggressive GBK retry */
 	if (archive_entry_pathname(entry) == NULL) {
-		/* Create null-terminated filename for direct setting */
+		/* First attempt: Try GBK conversion one more time, bypassing validation
+		 * by using the raw converter directly */
+		if (filename_length > 0 && filename_length < 1024) {
+			char converted_name[1024];
+			/* Force GBK conversion attempt - the converter will handle errors */
+			size_t converted_len = simple_gbk_to_utf8(h, filename_length, 
+			                                         converted_name, sizeof(converted_name));
+			
+			if (converted_len != (size_t)-1 && converted_len > 0) {
+				archive_entry_copy_pathname(entry, converted_name);
+				if (archive_entry_pathname(entry) != NULL) {
+					goto filename_done;
+				}
+			}
+		}
+		
+		/* Second attempt: Direct copy as last resort */
 		char fallback_filename[1024];
 		if (filename_length < sizeof(fallback_filename)) {
 			memcpy(fallback_filename, h, filename_length);
 			fallback_filename[filename_length] = '\0';
 			archive_entry_copy_pathname(entry, fallback_filename);
-			/* If direct copy worked, we're done */
 			if (archive_entry_pathname(entry) != NULL) {
 				goto filename_done;
 			}
@@ -4068,6 +4098,24 @@ slurp_central_directory(struct archive_read *a, struct archive_entry* entry,
 			    "Truncated ZIP file header");
 			return ARCHIVE_FATAL;
 		}
+		
+		/* Handle GBK encoding in central directory filenames if needed */
+		if (!(zip_entry->zip_flags & ZIP_UTF8_NAME) && filename_length > 0) {
+			int err = 0;
+			char* utf8_filename = gbk2utf8((const unsigned char*)p, filename_length, &err);
+			
+			/* Try lenient mode if strict validation fails */
+			if (utf8_filename == NULL && err == -2) {
+				utf8_filename = gbk2utf8_lenient((const unsigned char*)p, filename_length, &err);
+			}
+			
+			if (utf8_filename != NULL) {
+				/* Store converted filename in zip_entry for later use */
+				archive_strncpy(&zip_entry->rsrcname, utf8_filename, strlen(utf8_filename));
+				free(utf8_filename);
+			}
+		}
+		
 		if (ARCHIVE_OK != process_extra(a, entry, p + filename_length,
 		    extra_length, zip_entry)) {
 			return ARCHIVE_FATAL;
