@@ -6,6 +6,9 @@
 #ifndef __TAB_GBK2UNI__H__D76B1C4F_4C55_4497_AA37_CE482DC90E19
 #define __TAB_GBK2UNI__H__D76B1C4F_4C55_4497_AA37_CE482DC90E19
 
+#include <stdlib.h>
+#include <string.h>
+
 //我
 //#b'\xce\xd2'
 //[(0xce - 0x81) * 12 * 16 + 0xd2 - 0x40] = 14930
@@ -1685,6 +1688,87 @@ __oops:
 
 	return p_ret;
 } 
+
+/* Lenient GBK to UTF-8 converter that skips strict validation
+ * Useful for Windows-created ZIPs with slightly malformed GBK filenames */
+static char *gbk2utf8_lenient(const unsigned char *data, size_t len, int *err)
+{
+	int rv;
+	int i, j, flg, count;
+	char *p_ret = NULL;
+	unsigned char *p_cur = NULL, *p_src = NULL;
+	const unsigned char *cur;
+	unsigned char buf[4];
+
+	if (NULL == data || len <= 0) {
+		if (err) {
+			*err = -1;
+		}
+		return NULL;
+	}
+	
+	/* Skip is_valid_gbk check - try conversion directly */
+
+	p_src = (unsigned char *)malloc(len * 2);
+	if (NULL == p_src) {
+		if (err) {
+			*err = -5;
+		}
+		goto __oops_lenient;
+	}
+
+	flg = 1;
+
+	for (i = 0, cur = data, p_cur = p_src; i < len && flg; i ++, cur ++) {
+		if ((*cur & 0x80) == 0) {
+			/* 0xxxxxxx - ASCII */
+			*p_cur++ = *cur;
+			continue;
+		} else if (*cur > 0x80 && *cur < 0xFF) {
+			if (i + 1 >= len) {
+				/* Incomplete sequence - skip */
+				break;
+			}
+			count = *cur - 0x81;
+			i += 1;
+			cur += 1;
+			if (*cur < 0x40 || *cur == 0xFF || *cur == 0x7F) {
+				/* Invalid second byte - skip */
+				continue;
+			}
+			count = count * 12 * 16 + *cur - 0x40;
+			rv = gbk_uni2utf8(tab_uni_contents[count], buf);
+			if (0 != rv) {
+				/* Conversion error - skip */
+				continue;
+			}
+			for (j = 0; j < sizeof(buf); j ++) {
+				if (0 == buf[j]) 
+					break;
+				*p_cur++ = buf[j];
+			}
+		} else {
+			/* Invalid byte - skip */
+			continue;
+		}
+	}
+
+	/* Always succeed with best-effort conversion */
+	if (err) {
+		*err = 0;
+	}
+	*p_cur = 0;
+	p_ret = strdup((char *)p_src);
+
+__oops_lenient:
+	if (p_src) {
+		free(p_src);
+		p_src = NULL;
+	}
+
+	return p_ret;
+}
+
 static int is_valid_utf8(const unsigned char *data, size_t len)
 {
 	//int ret = -1;

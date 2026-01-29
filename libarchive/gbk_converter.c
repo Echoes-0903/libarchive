@@ -28,6 +28,15 @@ simple_gbk_to_utf8(const char *input, size_t input_len,
     int err = 0;
     char *converted = gbk2utf8((const unsigned char *)input, input_len, &err);
     
+    /* If strict validation fails (err == -2), try lenient conversion
+     * This handles files with slightly malformed GBK or mixed encodings */
+    if (converted == NULL && err == -2) {
+        /* Retry without strict validation by calling the converter directly
+         * Some Windows-created ZIPs have GBK filenames that fail strict validation
+         * but can still be converted successfully */
+        converted = gbk2utf8_lenient((const unsigned char *)input, input_len, &err);
+    }
+    
     if (converted == NULL || err != 0) {
         return (size_t)-1;
     }
