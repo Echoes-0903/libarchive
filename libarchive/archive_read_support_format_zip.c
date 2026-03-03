@@ -128,6 +128,63 @@ struct trad_enc_ctx {
    in http://www.pkware.com/documents/casestudies/APPNOTE.TXT */
 #define ZIP_CENTRAL_DIRECTORY_ENCRYPTED	(1 << 13)
 
+static int
+is_valid_utf8_bytes(const unsigned char *s, size_t len)
+{
+	size_t i = 0;
+
+	while (i < len) {
+		unsigned char c = s[i];
+		size_t remain;
+		size_t j;
+
+		if (c < 0x80) {
+			i++;
+			continue;
+		}
+
+		if ((c & 0xE0) == 0xC0) {
+			remain = 1;
+			if (c < 0xC2)
+				return 0;
+		} else if ((c & 0xF0) == 0xE0) {
+			remain = 2;
+		} else if ((c & 0xF8) == 0xF0) {
+			remain = 3;
+			if (c > 0xF4)
+				return 0;
+		} else {
+			return 0;
+		}
+
+		if (i + remain >= len)
+			return 0;
+
+		for (j = 1; j <= remain; j++) {
+			if ((s[i + j] & 0xC0) != 0x80)
+				return 0;
+		}
+
+		if (remain == 2) {
+			unsigned char c1 = s[i + 1];
+			if (c == 0xE0 && c1 < 0xA0)
+				return 0;
+			if (c == 0xED && c1 >= 0xA0)
+				return 0;
+		} else if (remain == 3) {
+			unsigned char c1 = s[i + 1];
+			if (c == 0xF0 && c1 < 0x90)
+				return 0;
+			if (c == 0xF4 && c1 >= 0x90)
+				return 0;
+		}
+
+		i += remain + 1;
+	}
+
+	return 1;
+}
+
 /* Bits used in flags. */
 #define LA_USED_ZIP64	(1 << 0)
 #define LA_FROM_CENTRAL_DIRECTORY (1 << 1)
@@ -1014,6 +1071,22 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
 			if (archive_entry_pathname(entry) != NULL) {
 				goto filename_done;
 			}
+		}
+	}
+
+	/* No UTF-8 flag: if raw bytes are valid UTF-8, prefer raw UTF-8 first.
+	 * Some ZIP creators store UTF-8 names without setting ZIP_UTF8_NAME.
+	 * If we skip this check and force GBK first, it produces mojibake like “鐪熷...”. */
+	if (!(zip_entry->zip_flags & ZIP_UTF8_NAME) &&
+	    archive_entry_pathname(entry) == NULL && filename_length > 0 &&
+	    filename_length < 1024 &&
+	    is_valid_utf8_bytes((const unsigned char *)h, filename_length)) {
+		char utf8_filename[1024];
+		memcpy(utf8_filename, h, filename_length);
+		utf8_filename[filename_length] = '\0';
+		archive_entry_copy_pathname(entry, utf8_filename);
+		if (archive_entry_pathname(entry) != NULL) {
+			goto filename_done;
 		}
 	}
 
