@@ -26,8 +26,16 @@
  */
 
 #include "archive_platform.h"
-#include "gbk_converter.h"
-#include "tab_gbk2uni.h"
+
+#ifdef __ANDROID__
+#include "charset_converter_jni.h"
+#include <android/log.h>
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "ZIP_ENCODER", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "ZIP_ENCODER", __VA_ARGS__)
+#else
+#define LOGD(...) ((void)0)
+#define LOGE(...) ((void)0)
+#endif
 
 /*
  * The definitive documentation of the Zip file format is:
@@ -1066,11 +1074,29 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
 	else
 		sconv = zip->sconv_default;
 
-	/* Handle UTF-8 filenames directly */
-	if (zip_entry->zip_flags & ZIP_UTF8_NAME) {
-		/* This is UTF-8 data, set it directly without locale conversion */
-		char utf8_filename[1024];
-		if (filename_length < sizeof(utf8_filename)) {
+	/* Try Java-based encoding conversion for non-UTF8 filenames (Android) */
+#ifdef __ANDROID__
+	if (filename_length > 0 && filename_length < 1024) {
+		const unsigned char *bytes = (const unsigned char *)h;
+		const char *existing_pathname = archive_entry_pathname(entry);
+		
+		/* If pathname already set, check if it's valid */
+		if (existing_pathname != NULL && existing_pathname[0] != '\0') {
+			size_t existing_len = strlen(existing_pathname);
+			/* If existing pathname is much longer than raw filename, it may have garbage */
+			if (existing_len > filename_length * 2) {
+				archive_entry_set_pathname(entry, "");  /* Clear it */
+				existing_pathname = "";
+			}
+		}
+		
+		/* Process if pathname is NULL or empty */
+		if (existing_pathname == NULL || existing_pathname[0] == '\0') {
+		
+		/* Check if already valid UTF-8 - if so, use directly */
+		if (is_valid_utf8_bytes(bytes, filename_length)) {
+			/* Must create null-terminated string since h is not null-terminated */
+			char utf8_filename[1024];
 			memcpy(utf8_filename, h, filename_length);
 			utf8_filename[filename_length] = '\0';
 			archive_entry_copy_pathname(entry, utf8_filename);
@@ -1078,75 +1104,37 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
 				goto filename_done;
 			}
 		}
-	}
-
-	/* No UTF-8 flag: if raw bytes are valid UTF-8, prefer raw UTF-8 first.
-	 * Some ZIP creators store UTF-8 names without setting ZIP_UTF8_NAME.
-	 * If we skip this check and force GBK first, it produces mojibake like “鐪熷...”. */
-	if (!(zip_entry->zip_flags & ZIP_UTF8_NAME) &&
-	    archive_entry_pathname(entry) == NULL && filename_length > 0 &&
-	    filename_length < 1024 &&
-	    is_valid_utf8_bytes((const unsigned char *)h, filename_length)) {
-		char utf8_filename[1024];
-		memcpy(utf8_filename, h, filename_length);
-		utf8_filename[filename_length] = '\0';
-		archive_entry_copy_pathname(entry, utf8_filename);
-		if (archive_entry_pathname(entry) != NULL) {
-			goto filename_done;
-		}
-	}
-
-	/* Aggressive GBK fallback: Try GBK conversion unconditionally if pathname not set
-	 * This handles Chinese filenames in Windows-created ZIPs which may have:
-	 * - No UTF-8 flag but GBK encoding
-	 * - Incorrect UTF-8 flag but actually GBK data
-	 * - Any encoding detection failure
-	 * 
-	 * We try GBK conversion first before other methods since it's common in
-	 * Chinese Windows environments and is_gbk_encoding() might be too conservative.
-	 */
-	if (archive_entry_pathname(entry) == NULL && filename_length > 0) {
+		
+		/* Not UTF-8, try GBK conversion (Chinese) */
 		char converted_name[1024];
-		
-		/* Always attempt GBK conversion - let the converter validate */
-		size_t converted_len = simple_gbk_to_utf8(h, filename_length, 
-		                                         converted_name, sizeof(converted_name));
-		
+		size_t converted_len = gbk_to_utf8(h, filename_length, converted_name, sizeof(converted_name));
 		if (converted_len != (size_t)-1) {
 			archive_entry_copy_pathname(entry, converted_name);
 			if (archive_entry_pathname(entry) != NULL) {
 				goto filename_done;
 			}
 		}
-	}
-	
-	/* Final fallback: try direct copy AND aggressive GBK retry */
-	if (archive_entry_pathname(entry) == NULL) {
-		/* First attempt: Try GBK conversion one more time, bypassing validation
-		 * by using the raw converter directly */
-		if (filename_length > 0 && filename_length < 1024) {
-			char converted_name[1024];
-			/* Force GBK conversion attempt - the converter will handle errors */
-			size_t converted_len = simple_gbk_to_utf8(h, filename_length, 
-			                                         converted_name, sizeof(converted_name));
-			
-			if (converted_len != (size_t)-1 && converted_len > 0) {
-				archive_entry_copy_pathname(entry, converted_name);
-				if (archive_entry_pathname(entry) != NULL) {
-					goto filename_done;
-				}
-			}
-		}
 		
-		/* Second attempt: Direct copy as last resort */
-		char fallback_filename[1024];
-		if (filename_length < sizeof(fallback_filename)) {
-			memcpy(fallback_filename, h, filename_length);
-			fallback_filename[filename_length] = '\0';
-			archive_entry_copy_pathname(entry, fallback_filename);
+		/* Try CP932 conversion (Japanese) */
+		converted_len = cp932_to_utf8(h, filename_length, converted_name, sizeof(converted_name));
+		if (converted_len != (size_t)-1) {
+			archive_entry_copy_pathname(entry, converted_name);
 			if (archive_entry_pathname(entry) != NULL) {
 				goto filename_done;
 			}
+		}
+		}  /* End: process if pathname is NULL or empty */
+	}  /* End: Android filename conversion */
+#endif
+
+	/* Final fallback: direct copy */
+	if (archive_entry_pathname(entry) == NULL && filename_length > 0 && filename_length < 1024) {
+		char fallback_filename[1024];
+		memcpy(fallback_filename, h, filename_length);
+		fallback_filename[filename_length] = '\0';
+		archive_entry_copy_pathname(entry, fallback_filename);
+		if (archive_entry_pathname(entry) != NULL) {
+			goto filename_done;
 		}
 	}
 	
@@ -4183,21 +4171,18 @@ slurp_central_directory(struct archive_read *a, struct archive_entry* entry,
 		}
 		
 		/* Handle GBK encoding in central directory filenames if needed */
+#ifdef __ANDROID__
 		if (!(zip_entry->zip_flags & ZIP_UTF8_NAME) && filename_length > 0) {
-			int err = 0;
-			char* utf8_filename = gbk2utf8((const unsigned char*)p, filename_length, &err);
+			char utf8_filename[1024];
+			size_t converted_len = gbk_to_utf8(p, filename_length, 
+			                                   utf8_filename, sizeof(utf8_filename));
 			
-			/* Try lenient mode if strict validation fails */
-			if (utf8_filename == NULL && err == -2) {
-				utf8_filename = gbk2utf8_lenient((const unsigned char*)p, filename_length, &err);
-			}
-			
-			if (utf8_filename != NULL) {
+			if (converted_len != (size_t)-1) {
 				/* Store converted filename in zip_entry for later use */
-				archive_strncpy(&zip_entry->rsrcname, utf8_filename, strlen(utf8_filename));
-				free(utf8_filename);
+				archive_strncpy(&zip_entry->rsrcname, utf8_filename, converted_len);
 			}
 		}
+#endif /* __ANDROID__ */
 		
 		if (ARCHIVE_OK != process_extra(a, entry, p + filename_length,
 		    extra_length, zip_entry)) {
