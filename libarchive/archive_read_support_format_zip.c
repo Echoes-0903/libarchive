@@ -851,9 +851,11 @@ process_extra(struct archive_read *a, struct archive_entry *entry,
 			
 			/* CRITICAL FIX: If pathname is already set from local header with UTF8 flag,
 			 * don't overwrite it with the 0x7075 extra field processing.
-			 * The local header pathname is more reliable for UTF-8 filenames. */
+			 * Some ZIP files have an empty or truncated 0x7075 field that would
+			 * silently clear the already-correct UTF-8 pathname. */
 			const char *existing_pathname = archive_entry_pathname(entry);
-			if (existing_pathname != NULL && (zip_entry->zip_flags & ZIP_UTF8_NAME)) {
+			if (existing_pathname != NULL && existing_pathname[0] != '\0' &&
+			    (zip_entry->zip_flags & ZIP_UTF8_NAME)) {
 				break;
 			}
 			
@@ -4169,20 +4171,6 @@ slurp_central_directory(struct archive_read *a, struct archive_entry* entry,
 			    "Truncated ZIP file header");
 			return ARCHIVE_FATAL;
 		}
-		
-		/* Handle GBK encoding in central directory filenames if needed */
-#ifdef __ANDROID__
-		if (!(zip_entry->zip_flags & ZIP_UTF8_NAME) && filename_length > 0) {
-			char utf8_filename[1024];
-			size_t converted_len = gbk_to_utf8(p, filename_length, 
-			                                   utf8_filename, sizeof(utf8_filename));
-			
-			if (converted_len != (size_t)-1) {
-				/* Store converted filename in zip_entry for later use */
-				archive_strncpy(&zip_entry->rsrcname, utf8_filename, converted_len);
-			}
-		}
-#endif /* __ANDROID__ */
 		
 		if (ARCHIVE_OK != process_extra(a, entry, p + filename_length,
 		    extra_length, zip_entry)) {

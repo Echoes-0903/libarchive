@@ -26,7 +26,7 @@ void charset_converter_set_jvm(JavaVM *jvm) {
 
 /* JNI method callable from Java to initialize the converter */
 JNIEXPORT void JNICALL
-Java_com_ponyemu_common_ArchiveUtil_initCharsetConverter(JNIEnv *env, jclass clazz) {
+Java_com_ponyemu_common_ArchiveUtil_initCharsetConverter(JNIEnv *env, jclass clazz __attribute__((unused))) {
     if ((*env)->GetJavaVM(env, &g_jvm) != 0) {
         LOGE("Failed to get JavaVM from JNIEnv");
         return;
